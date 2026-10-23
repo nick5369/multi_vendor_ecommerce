@@ -1,0 +1,92 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+secrets/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs & Debugging
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Node / Frontend / JavaScript / TypeScript
+node_modules/
+dist/
+build/
+.next/
+out/
+.nuxt/
+.cache/
+.parcel-cache/
+.turbo/
+
+# Python (inventory-service, etc.)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Java / Maven / Gradle (catalog-service, etc.)
+target/
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+.gradle/
+build/
+
+# Go (order-service, etc.)
+/services/order-service/order-service
+/services/order-service/order-service.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Testing & Coverage
+coverage/
+.nyc_output/
+htmlcov/
+.coverage
+.coverage.*
+
+# Database / Storage / Backups
+infrastructure/backups/*
+!infrastructure/backups/.gitkeep
+*.sqlite
+*.sqlite3
+*.db
+data/

@@ -1,0 +1,17 @@
+entryPoints:
+  web:
+    address: ":8080"
+ping:
+  entryPoint: web
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+accessLog:
+  format: json
+log:
+  format: json
+  level: INFO
+metrics:
+  prometheus:
+    entryPoint: web

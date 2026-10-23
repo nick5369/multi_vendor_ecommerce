@@ -1,0 +1,73 @@
+# Path-prefix routing. Each prefix is stripped before reaching the service,
+# e.g. /api/catalog/products -> catalog-service /products.
+# Services re-validate JWTs themselves; the gateway is not the only security layer.
+# Private endpoints live under /internal on each service and are NOT routed here.
+http:
+  routers:
+    # private endpoints (service-to-service) and metrics are never reachable from outside
+    blocked:
+      rule: "PathRegexp(`^/api/[a-z]+/(internal|metrics)(/|$)`)"
+      priority: 10000
+      service: auth
+      entryPoints: [web]
+      middlewares: [deny-all]
+    auth:
+      rule: "PathPrefix(`/api/auth`)"
+      service: auth
+      entryPoints: [web]
+      middlewares: [strip-auth, cors, auth-rate-limit, request-id]
+    catalog:
+      rule: "PathPrefix(`/api/catalog`)"
+      service: catalog
+      entryPoints: [web]
+      middlewares: [strip-catalog, cors, request-id]
+    orders:
+      rule: "PathPrefix(`/api/orders`)"
+      service: orders
+      entryPoints: [web]
+      middlewares: [strip-orders, cors, request-id]
+    inventory:
+      rule: "PathPrefix(`/api/inventory`)"
+      service: inventory
+      entryPoints: [web]
+      middlewares: [strip-inventory, cors, request-id]
+    payments:
+      rule: "PathPrefix(`/api/payments`)"
+      service: payments
+      entryPoints: [web]
+      middlewares: [strip-payments, cors, request-id]
+
+  middlewares:
+    deny-all:
+      ipAllowList:
+        sourceRange: ["192.0.2.1/32"]   # TEST-NET address: nothing real matches, so every caller gets 403
+    strip-auth:      { stripPrefix: { prefixes: ["/api/auth"] } }
+    strip-catalog:   { stripPrefix: { prefixes: ["/api/catalog"] } }
+    strip-orders:    { stripPrefix: { prefixes: ["/api/orders"] } }
+    strip-inventory: { stripPrefix: { prefixes: ["/api/inventory"] } }
+    strip-payments:  { stripPrefix: { prefixes: ["/api/payments"] } }
+    auth-rate-limit:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+    request-id:
+      headers:
+        customRequestHeaders:
+          X-Gateway: "traefik"
+    cors:
+      headers:
+        accessControlAllowOriginList: ["http://localhost:5173", "http://127.0.0.1:5173"]
+        accessControlAllowMethods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+        accessControlAllowHeaders: [Authorization, Content-Type, Idempotency-Key, X-Request-Id]
+        accessControlExposeHeaders: [X-Request-Id]
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 600
+        addVaryHeader: true
+
+  services:
+    auth:      { loadBalancer: { servers: [{ url: "http://auth-service:3001" }] } }
+    catalog:   { loadBalancer: { servers: [{ url: "http://catalog-service:8082" }] } }
+    orders:    { loadBalancer: { servers: [{ url: "http://order-service:8083" }] } }
+    inventory: { loadBalancer: { servers: [{ url: "http://inventory-service:8084" }] } }
+    payments:  { loadBalancer: { servers: [{ url: "http://payment-service:8085" }] } }

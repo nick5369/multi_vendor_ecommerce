@@ -1,0 +1,51 @@
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+  error:
+    include-stacktrace: never
+    include-message: never
+spring:
+  application:
+    name: catalog-service
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  jackson:
+    deserialization:
+      accept-float-as-int: false
+    mapper:
+      allow-coercion-of-scalars: false
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:redis}
+      password: ${REDIS_PASSWORD:}
+  rabbitmq:
+    addresses: ${RABBITMQ_URL}
+app:
+  cache-ttl-seconds: ${REDIS_CACHE_TTL_SECONDS:120}
+  internal-token: ${INTERNAL_SERVICE_TOKEN}
+  jwks-url: ${JWKS_URL}
+  jwt-issuer: ${JWT_ISSUER:mve-auth}
+  jwt-audience: ${JWT_AUDIENCE:mve-api}
+management:
+  # separate internal port: actuator/prometheus are never reachable through the public gateway route
+  server:
+    port: 8081
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    rabbit:
+      enabled: false

@@ -1,0 +1,356 @@
+# Local development stack. All secrets come from .env (copy .env.example). Never commit .env.
+# `docker compose down`     -> stops containers, KEEPS named volumes (data preserved)
+# `docker compose down -v`  -> DESTRUCTIVE: deletes every named volume (all data lost)
+
+name: mve
+
+x-app-defaults: &app-defaults
+  restart: unless-stopped
+  stop_grace_period: 20s
+  networks: [backend]
+
+x-healthcheck-http: &hc-http
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 30s
+
+services:
+  # ---------------------------------------------------------------- edge
+  gateway:
+    image: traefik:v3.1.6
+    restart: unless-stopped
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ./infrastructure/gateway/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./infrastructure/gateway/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    networks: [public, backend]
+    depends_on:
+      auth-service: { condition: service_healthy }
+      catalog-service: { condition: service_healthy }
+      order-service: { condition: service_healthy }
+      inventory-service: { condition: service_healthy }
+      payment-service: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_GATEWAY_URL:-http://localhost:8080}
+        VITE_RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5173}:80"
+    networks: [public]
+
+  # ---------------------------------------------------------------- business services
+  auth-service:
+    <<: *app-defaults
+    build: ./services/auth-service
+    environment:
+      PORT: "3001"
+      MONGODB_URI: mongodb://${MONGO_APP_USER}:${MONGO_APP_PASSWORD}@mongodb:27017/${MONGO_DB:-auth}?authSource=${MONGO_DB:-auth}
+      JWT_PRIVATE_KEY_BASE64: ${JWT_PRIVATE_KEY_BASE64:?run scripts/gen-keys}
+      JWT_PUBLIC_KEY_BASE64: ${JWT_PUBLIC_KEY_BASE64:?run scripts/gen-keys}
+      JWT_ISSUER: ${JWT_ISSUER:-mve-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-mve-api}
+      JWT_ACCESS_TTL_SECONDS: ${JWT_ACCESS_TTL_SECONDS:-900}
+      REFRESH_TTL_SECONDS: ${REFRESH_TTL_SECONDS:-1209600}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      ADMIN_SEED_EMAIL: ${ADMIN_SEED_EMAIL:-}
+      ADMIN_SEED_PASSWORD: ${ADMIN_SEED_PASSWORD:-}
+      MAIL_MODE: ${MAIL_MODE:-log}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    depends_on:
+      mongodb: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      <<: *hc-http
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/health"]
+
+  catalog-service:
+    <<: *app-defaults
+    build: ./services/catalog-service
+    environment:
+      SERVER_PORT: "8082"
+      DB_URL: jdbc:postgresql://catalog-postgres:5432/${CATALOG_DB:-catalog}
+      DB_USER: ${CATALOG_DB_USER:-catalog}
+      DB_PASSWORD: ${CATALOG_DB_PASSWORD:?}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      REDIS_CACHE_TTL_SECONDS: ${REDIS_CACHE_TTL_SECONDS:-120}
+      JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-mve-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-mve-api}
+      INVENTORY_URL: http://inventory-service:8084
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    depends_on:
+      catalog-postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      <<: *hc-http
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health/readiness"]
+
+  order-service:
+    <<: *app-defaults
+    build: ./services/order-service
+    environment:
+      PORT: "8083"
+      MYSQL_DSN: ${MYSQL_APP_USER}:${MYSQL_APP_PASSWORD}@tcp(mysql:3306)/${MYSQL_DB:-orders}?parseTime=true&charset=utf8mb4&loc=UTC
+      JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-mve-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-mve-api}
+      CATALOG_URL: http://catalog-service:8082
+      INVENTORY_URL: http://inventory-service:8084
+      PAYMENT_URL: http://payment-service:8085
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CART_MAX_QUANTITY: ${CART_MAX_QUANTITY:-1000}
+      RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    depends_on:
+      mysql: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      <<: *hc-http
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/health"]
+
+  inventory-service:
+    <<: *app-defaults
+    build: ./services/inventory-service
+    environment:
+      PORT: "8084"
+      CATALOG_URL: http://catalog-service:8082
+      RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
+      DATABASE_URL: postgresql+psycopg://${INVENTORY_DB_USER:-inventory}:${INVENTORY_DB_PASSWORD:?}@inventory-postgres:5432/${INVENTORY_DB:-inventory}
+      JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-mve-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-mve-api}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    depends_on:
+      inventory-postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      <<: *hc-http
+      test: ["CMD", "curl", "-fsS", "http://localhost:8084/health"]
+
+  payment-service:
+    <<: *app-defaults
+    build: ./services/payment-service
+    # public: outbound access to the Razorpay API; backend: internal services
+    networks: [backend, public]
+    environment:
+      PORT: "8085"
+      DB_HOST: payment-postgres
+      DB_PORT: "5432"
+      DB_NAME: ${PAYMENT_DB:-payments}
+      DB_USER: ${PAYMENT_DB_USER:-payments}
+      DB_PASSWORD: ${PAYMENT_DB_PASSWORD:?}
+      JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      JWT_ISSUER: ${JWT_ISSUER:-mve-auth}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-mve-api}
+      ORDER_URL: http://order-service:8083
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      PAYMENT_GATEWAY: ${PAYMENT_GATEWAY:-razorpay}   # razorpay | mock (mock only for local dev)
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      MOCK_GATEWAY_SECRET: ${MOCK_GATEWAY_SECRET:-}
+      MOCK_WEBHOOK_SECRET: ${MOCK_WEBHOOK_SECRET:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    depends_on:
+      payment-postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      <<: *hc-http
+      test: ["CMD", "curl", "-fsS", "http://localhost:8085/health"]
+
+  # ---------------------------------------------------------------- databases (one per service)
+  mongodb:
+    image: mongo:7.0.14
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-auth}
+      MONGO_DB: ${MONGO_DB:-auth}
+      MONGO_APP_USER: ${MONGO_APP_USER:?}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?}
+    volumes:
+      - mongo_data:/data/db
+      - ./infrastructure/database-init/mongo:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  catalog-postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: ${CATALOG_DB:-catalog}
+      POSTGRES_USER: ${CATALOG_DB_USER:-catalog}
+      POSTGRES_PASSWORD: ${CATALOG_DB_PASSWORD:?}
+    volumes:
+      - catalog_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  mysql:
+    image: mysql:8.4.2
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
+      MYSQL_DATABASE: ${MYSQL_DB:-orders}
+      MYSQL_USER: ${MYSQL_APP_USER:?}
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--transaction-isolation=READ-COMMITTED"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  inventory-postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: ${INVENTORY_DB:-inventory}
+      POSTGRES_USER: ${INVENTORY_DB_USER:-inventory}
+      POSTGRES_PASSWORD: ${INVENTORY_DB_PASSWORD:?}
+    volumes:
+      - inventory_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  payment-postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: ${PAYMENT_DB:-payments}
+      POSTGRES_USER: ${PAYMENT_DB_USER:-payments}
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD:?}
+    volumes:
+      - payment_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # ---------------------------------------------------------------- cache + broker
+  redis:
+    image: redis:7.4.0-alpine
+    restart: unless-stopped
+    networks: [backend]
+    # Cache only: never the system of record. AOF is on purely for warm restarts.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?}", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} --no-auth-warning ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+
+  rabbitmq:
+    image: rabbitmq:3.13.7-management-alpine
+    restart: unless-stopped
+    networks: [backend, public]
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?}
+    ports:
+      - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./infrastructure/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-local.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------- monitoring
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    networks: [backend, public]
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    restart: unless-stopped
+    networks: [backend, public]
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3100}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+
+networks:
+  # internet-facing side: gateway, web, host-published ports, Razorpay egress
+  public:
+    driver: bridge
+  # service-to-service and databases; no direct host access
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  mongo_data:
+  catalog_pg_data:
+  mysql_data:
+  inventory_pg_data:
+  payment_pg_data:
+  redis_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

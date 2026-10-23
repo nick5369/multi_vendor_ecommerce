@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <!-- One JSON object per line. Message text is reduced to a safe character set so every line stays valid JSON. -->
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z',UTC}","level":"%level","service":"catalog-service","requestId":"%X{requestId:-}","logger":"%logger{30}","msg":"%replace(%msg){'[^a-zA-Z0-9 _.,:;=/()>-]', ' '}","exception":"%replace(%ex{3}){'[^a-zA-Z0-9 _.,:;=/()>-]', ' '}"}%nopex%n</pattern>
+    </encoder>
+  </appender>
+  <root level="INFO">
+    <appender-ref ref="JSON" />
+  </root>
+</configuration>
